@@ -20,12 +20,13 @@ dependencies {
     // This dependency is used by the application.
     implementation libs.guava
 
-    // Add dependencies for WebSocket support
+    implementation 'javax.websocket:javax.websocket-api:1.1'
     implementation 'org.java-websocket:Java-WebSocket:1.5.2'
-
+    implementation 'com.google.code.gson:gson:2.8.9'
+    implementation 'org.java-websocket:Java-WebSocket:1.5.2'
+    implementation 'io.undertow:undertow-websockets-jsr:2.2.14.Final'
     implementation 'org.slf4j:slf4j-simple:1.7.32'
 
-    implementation 'javax.websocket:javax.websocket-api:1.1'
 }
 
 // Apply a specific Java toolchain to ease working on different environments.
@@ -37,6 +38,6 @@ java {
 
 application {
     // Define the main class for the application.
-    mainClass = 'pose.estimator.WSClient'
+    mainClass = 'pose.estimator.CameraWebsocketClient'
 }
 
