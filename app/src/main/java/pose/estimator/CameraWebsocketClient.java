@@ -12,10 +12,11 @@ import java.util.concurrent.TimeUnit;
 
 @ClientEndpoint
 public class CameraWebsocketClient {
-    private static final String ip = "ws://10.42.0.118:50000";
-    private static String message = "";
-    private static boolean messageViewed = true;
-    private static CountDownLatch latch;
+    private String ip = "ws://10.42.0.118:50000";
+    private String message = "";
+    private CountDownLatch latch;
+    private Session wSession;
+    private double rotation;
 
     public static class Color {
         public double red;
@@ -41,7 +42,111 @@ public class CameraWebsocketClient {
         public int activeColor;
     }
 
-        private Info getInfoFromString(String pMessage) {
+    public static class Apriltag {
+        public String tagId;
+        public double[] position;
+        public double[] orientation;
+        public double distance;
+        public double horizontalAngle;
+        public double verticalAngle;
+    }
+
+    public CameraWebsocketClient() {}
+
+    public CameraWebsocketClient(String ip) {
+        this.ip = ip;
+    }
+
+    @OnOpen
+    public void onOpen(Session session) {
+        System.out.println("Connected to WebSocket server");
+    }
+
+    @OnMessage
+    public void onMessage(String message) {
+        System.out.println("Received message: " + message);
+        this.message = message;
+        latch.countDown();
+    }
+
+    @OnClose
+    public void onClose(Session session, CloseReason closeReason) {
+        System.out.println("Disconnected from WebSocket server");
+        System.out.println("Reason: " + closeReason);
+        setupConnection();
+    }
+
+    @OnError
+    public void onError(Session session, Throwable throwable) {
+        System.out.println("An error occurred:");
+        throwable.printStackTrace();
+    }
+
+    public boolean setupConnection() {
+        try {
+            WebSocketContainer container = ContainerProvider.getWebSocketContainer();
+            URI uri = new URI(this.ip);
+            wSession = container.connectToServer(CameraWebsocketClient.class, uri);
+            CameraWebsocketClient app = new CameraWebsocketClient();
+            System.out.println("Connected?");
+            Info info = app.getInfo();
+            if (info != null) {
+                return true;
+            } else {
+                return false;
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+            return false;
+        }
+        
+    }
+
+    private void sendMessage(Session session, String pMessage) {
+        System.out.println("Sending message: " + pMessage);
+        session.getAsyncRemote().sendText(pMessage);
+    }
+
+    private String getMessage() {
+        latch = new CountDownLatch(1);
+        try {
+            latch.await(5, TimeUnit.SECONDS); // Wait for the message or timeout after 5 seconds
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+        return message;
+    }
+
+    public JsonObject decodeJson(String jsonString) {
+        Gson gson = new Gson();
+        return gson.fromJson(jsonString, JsonObject.class);
+    }
+
+    public double getRotation() {
+        return rotation;
+    }
+
+    public void setRotation(double rotation) {
+        this.rotation = rotation;
+    }
+
+    public Info getInfo() {
+        try {
+            sendMessage(wSession, "info");
+            String newMessage = getMessage();
+            return getInfoFromString(newMessage);
+        } catch (Exception e) {
+            e.printStackTrace();
+            if (setupConnection()){
+                sendMessage(wSession, "info");
+                String newMessage = getMessage();
+                return getInfoFromString(newMessage);
+            }
+            return null;
+        }
+    }
+
+    private Info getInfoFromString(String pMessage) {
         try {
             JsonObject json = decodeJson(pMessage);
             Info info = new Info();
@@ -75,75 +180,50 @@ public class CameraWebsocketClient {
         }
     }
 
-    private String getMessage() {
-        latch = new CountDownLatch(1);
+    public List<Apriltag> getApriltags() {
         try {
-            latch.await(5, TimeUnit.SECONDS); // Wait for the message or timeout after 5 seconds
-        } catch (InterruptedException e) {
-            e.printStackTrace();
-        }
-        messageViewed = true;
-        return message;
-    }
-
-    @OnOpen
-    public void onOpen(Session session) {
-        System.out.println("Connected to WebSocket server");
-    }
-
-    @OnMessage
-    public void onMessage(String message) {
-        System.out.println("Received message: " + message);
-        CameraWebsocketClient.message = message;
-        messageViewed = false;
-        latch.countDown();
-    }
-
-    @OnClose
-    public void onClose(Session session, CloseReason closeReason) {
-        System.out.println("Disconnected from WebSocket server");
-        System.out.println("Reason: " + closeReason);
-    }
-
-    @OnError
-    public void onError(Session session, Throwable throwable) {
-        System.out.println("An error occurred:");
-        throwable.printStackTrace();
-    }
-
-    public void sendMessage(Session session, String pMessage) {
-        System.out.println("Sending message: " + pMessage);
-        session.getAsyncRemote().sendText(pMessage);
-    }
-
-    public Info getInfo(Session session) {
-        sendMessage(session, "info");
-        String newMessage = getMessage();
-        return getInfoFromString(newMessage);
-    }
-
-    public JsonObject decodeJson(String jsonString) {
-        Gson gson = new Gson();
-        return gson.fromJson(jsonString, JsonObject.class);
-    }
-
-    public static void main(String[] args) {
-        try {
-            WebSocketContainer container = ContainerProvider.getWebSocketContainer();
-            URI uri = new URI(ip);
-            Session session = container.connectToServer(CameraWebsocketClient.class, uri);
-            CameraWebsocketClient app = new CameraWebsocketClient();
-            System.out.println("Connected?");
-            Info info = app.getInfo(session);
-            if (info != null) {
-                System.out.println("Camera Name: " + info.cameraName);
-                // Print other fields as needed
-            } else {
-                System.out.println("Failed to get info");
-            }
-            session.close();
+            sendMessage(wSession, "fa");
+            String newMessage = getMessage();
+            return getApriltagsFromString(newMessage);
         } catch (Exception e) {
             e.printStackTrace();
+            if (setupConnection()){
+                sendMessage(wSession, "fa");
+                String newMessage = getMessage();
+                return getApriltagsFromString(newMessage);
+            }
+            return null;
+        }
+    }
+
+
+    private List<Apriltag> getApriltagsFromString(String pMessage) {
+        try {
+            JsonObject json = decodeJson(pMessage);
+            List<Apriltag> apriltags = new ArrayList<>();
+            for (var apriltagJson : json.getAsJsonArray()) {
+                Apriltag apriltag = new Apriltag();
+                JsonObject apriltagObject = apriltagJson.getAsJsonObject();
+                apriltag.tagId = apriltagObject.get("tag_id").getAsString();
+                apriltag.position = new double[]{
+                    apriltagObject.get("position").getAsJsonArray().get(0).getAsDouble(),
+                    apriltagObject.get("position").getAsJsonArray().get(1).getAsDouble(),
+                    apriltagObject.get("position").getAsJsonArray().get(2).getAsDouble()
+                };
+                apriltag.orientation = new double[]{
+                    apriltagObject.get("orientation").getAsJsonArray().get(0).getAsDouble(),
+                    apriltagObject.get("orientation").getAsJsonArray().get(1).getAsDouble(),
+                    apriltagObject.get("orientation").getAsJsonArray().get(2).getAsDouble()
+                };
+                apriltag.distance = apriltagObject.get("distance").getAsDouble();
+                apriltag.horizontalAngle = apriltagObject.get("horizontal_angle").getAsDouble();
+                apriltag.verticalAngle = apriltagObject.get("vertical_angle").getAsDouble();
+                apriltags.add(apriltag);
+            }
+            return apriltags;
+        } catch (Exception e) {
+            e.printStackTrace();
+            return null;
         }
     }
 }
