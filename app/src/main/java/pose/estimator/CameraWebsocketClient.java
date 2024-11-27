@@ -2,19 +2,24 @@ package pose.estimator;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonArray;
+
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.FileWriter;
+import java.io.IOException;
 
 import javax.websocket.*;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Scanner;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 @ClientEndpoint
 public class CameraWebsocketClient {
     private String ip = "ws://10.42.0.118:50000";
-    private String message = "";
-    private CountDownLatch latch;
     private Session wSession;
     private double rotation;
 
@@ -40,6 +45,7 @@ public class CameraWebsocketClient {
         public double verticalFieldOfViewRadians;
         public List<Color> colorList;
         public int activeColor;
+        public String fullString;
     }
 
     public static class Apriltag {
@@ -49,11 +55,25 @@ public class CameraWebsocketClient {
         public double distance;
         public double horizontalAngle;
         public double verticalAngle;
+        public String fullString;
+    }
+
+    @OnMessage
+    public void onMessage(String newMessage) {
+        // This is the part that is skechy - writing to a file isn't the best way to do this but it works for the example. 
+        try {
+            FileWriter myWriter = new FileWriter("file_" + ip.replace("/", "").replace(":", "") + ".txt");
+            myWriter.write(newMessage);
+            myWriter.close();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
     }
 
     public CameraWebsocketClient() {}
 
     public CameraWebsocketClient(String ip) {
+        // Ip should be somehting like "ws://10.42.0.118:50000". Include the ws:// and the port number.
         this.ip = ip;
     }
 
@@ -62,18 +82,10 @@ public class CameraWebsocketClient {
         System.out.println("Connected to WebSocket server");
     }
 
-    @OnMessage
-    public void onMessage(String message) {
-        System.out.println("Received message: " + message);
-        this.message = message;
-        latch.countDown();
-    }
-
     @OnClose
     public void onClose(Session session, CloseReason closeReason) {
         System.out.println("Disconnected from WebSocket server");
         System.out.println("Reason: " + closeReason);
-        setupConnection();
     }
 
     @OnError
@@ -82,15 +94,22 @@ public class CameraWebsocketClient {
         throwable.printStackTrace();
     }
 
+    public boolean isConnected() {
+        if (wSession == null) {
+            return false;
+        }
+        return wSession.isOpen();
+    }
+
     public boolean setupConnection() {
+        // This function sets up the connection to the websocket server. It returns true if the connection was successful and false if it was not.
+        // Call this at any time if you want to reconnect to the server.
         try {
             WebSocketContainer container = ContainerProvider.getWebSocketContainer();
             URI uri = new URI(this.ip);
             wSession = container.connectToServer(CameraWebsocketClient.class, uri);
-            CameraWebsocketClient app = new CameraWebsocketClient();
-            System.out.println("Connected?");
-            Info info = app.getInfo();
-            if (info != null) {
+            Thread.sleep(1000);
+            if (isConnected()) {
                 return true;
             } else {
                 return false;
@@ -103,18 +122,42 @@ public class CameraWebsocketClient {
     }
 
     private void sendMessage(Session session, String pMessage) {
-        System.out.println("Sending message: " + pMessage);
         session.getAsyncRemote().sendText(pMessage);
     }
 
-    private String getMessage() {
-        latch = new CountDownLatch(1);
+    public String getMessage() {
+        // This function gets the message from the websocket server. It returns the message as a string.
+        // This is the other sketchy part - it reads from a file. This is not the best way to do this but it works for the example.
+
+        double startTime = System.currentTimeMillis();
+        String data = "";
+
+        while (startTime + 5000 > System.currentTimeMillis()) {
+            try {
+                boolean breakLoop = false;
+                File myObj = new File("file_" + ip.replace("/", "").replace(":", "") + ".txt");
+                Scanner myReader = new Scanner(myObj);
+                while (myReader.hasNextLine()) {
+                    data = myReader.nextLine();
+                    breakLoop = true;
+                }
+                if (breakLoop) {
+                    break;
+                }
+                myReader.close();
+            } catch (FileNotFoundException e) {
+                e.printStackTrace();
+            }
+        }
         try {
-            latch.await(5, TimeUnit.SECONDS); // Wait for the message or timeout after 5 seconds
-        } catch (InterruptedException e) {
+            FileWriter myWriter = new FileWriter("file_" + ip.replace("/", "").replace(":", "") + ".txt");
+            myWriter.write("");
+            myWriter.close();
+        } catch (IOException e) {
             e.printStackTrace();
         }
-        return message;
+        return data;
+        
     }
 
     public JsonObject decodeJson(String jsonString) {
@@ -136,13 +179,7 @@ public class CameraWebsocketClient {
             String newMessage = getMessage();
             return getInfoFromString(newMessage);
         } catch (Exception e) {
-            e.printStackTrace();
-            if (setupConnection()){
-                sendMessage(wSession, "info");
-                String newMessage = getMessage();
-                return getInfoFromString(newMessage);
-            }
-            return null;
+            return new Info();
         }
     }
 
@@ -173,10 +210,12 @@ public class CameraWebsocketClient {
                 color.blur = colorObject.get("blur").getAsDouble();
                 info.colorList.add(color);
             }
+            info.fullString = pMessage;
             return info;
         } catch (Exception e) {
+            System.out.println("Error getting info");
             e.printStackTrace();
-            return null;
+            return new Info();
         }
     }
 
@@ -192,38 +231,47 @@ public class CameraWebsocketClient {
                 String newMessage = getMessage();
                 return getApriltagsFromString(newMessage);
             }
-            return null;
+            return new ArrayList<Apriltag>();
         }
     }
 
 
     private List<Apriltag> getApriltagsFromString(String pMessage) {
         try {
-            JsonObject json = decodeJson(pMessage);
+            // Decode the JSON string into a JsonArray
+            JsonArray jsonArray = new Gson().fromJson(pMessage, JsonArray.class);
             List<Apriltag> apriltags = new ArrayList<>();
-            for (var apriltagJson : json.getAsJsonArray()) {
-                Apriltag apriltag = new Apriltag();
-                JsonObject apriltagObject = apriltagJson.getAsJsonObject();
-                apriltag.tagId = apriltagObject.get("tag_id").getAsString();
-                apriltag.position = new double[]{
-                    apriltagObject.get("position").getAsJsonArray().get(0).getAsDouble(),
-                    apriltagObject.get("position").getAsJsonArray().get(1).getAsDouble(),
-                    apriltagObject.get("position").getAsJsonArray().get(2).getAsDouble()
-                };
-                apriltag.orientation = new double[]{
-                    apriltagObject.get("orientation").getAsJsonArray().get(0).getAsDouble(),
-                    apriltagObject.get("orientation").getAsJsonArray().get(1).getAsDouble(),
-                    apriltagObject.get("orientation").getAsJsonArray().get(2).getAsDouble()
-                };
-                apriltag.distance = apriltagObject.get("distance").getAsDouble();
-                apriltag.horizontalAngle = apriltagObject.get("horizontal_angle").getAsDouble();
-                apriltag.verticalAngle = apriltagObject.get("vertical_angle").getAsDouble();
-                apriltags.add(apriltag);
+    
+            // Check if the JsonArray is not null and has elements
+            if (jsonArray != null && jsonArray.size() > 0) {
+                for (var apriltagJson : jsonArray) {
+                    Apriltag apriltag = new Apriltag();
+                    JsonObject apriltagObject = apriltagJson.getAsJsonObject();
+                    apriltag.tagId = apriltagObject.get("tag_id").getAsString();
+                    apriltag.position = new double[]{
+                        apriltagObject.get("position").getAsJsonArray().get(0).getAsDouble(),
+                        apriltagObject.get("position").getAsJsonArray().get(1).getAsDouble(),
+                        apriltagObject.get("position").getAsJsonArray().get(2).getAsDouble()
+                    };
+                    apriltag.orientation = new double[]{
+                        apriltagObject.get("orientation").getAsJsonArray().get(0).getAsDouble(),
+                        apriltagObject.get("orientation").getAsJsonArray().get(1).getAsDouble(),
+                        apriltagObject.get("orientation").getAsJsonArray().get(2).getAsDouble()
+                    };
+                    apriltag.distance = apriltagObject.get("distance").getAsDouble();
+                    apriltag.horizontalAngle = apriltagObject.get("horizontal_angle").getAsDouble();
+                    apriltag.verticalAngle = apriltagObject.get("vertical_angle").getAsDouble();
+                    apriltags.add(apriltag);
+                }
+                apriltags.get(0).fullString = pMessage;
             }
+    
             return apriltags;
         } catch (Exception e) {
             e.printStackTrace();
-            return null;
+            return new ArrayList<>();
         }
     }
+
+    // There are a lot more functions I can write but I think this is enough for the meeting. I can write more if you want.
 }

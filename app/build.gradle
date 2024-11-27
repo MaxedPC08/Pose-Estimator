@@ -38,6 +38,6 @@ java {
 
 application {
     // Define the main class for the application.
-    mainClass = 'pose.estimator.CameraWebsocketClient'
+    mainClass = 'pose.estimator.Estimator'
 }
 
