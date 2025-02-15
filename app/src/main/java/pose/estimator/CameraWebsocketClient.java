@@ -1,28 +1,33 @@
 package pose.estimator;
 
-import com.google.gson.Gson;
-import com.google.gson.JsonObject;
-import com.google.gson.JsonArray;
-
-import java.io.File;
-import java.io.FileNotFoundException;
-import java.io.FileWriter;
-import java.io.IOException;
-
-import javax.websocket.*;
 import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.WebSocket;
+import java.net.http.WebSocket.Listener;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Scanner;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
-@ClientEndpoint
+import com.google.gson.Gson;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonPrimitive;
+
+/**
+ * A websocket client to interface with Astrolabe's server running on a(n) RPI(s).
+ */
 public class CameraWebsocketClient {
     private String ip = "ws://10.42.0.118:50000";
-    private Session wSession;
+    private WebSocket webSocket;
     private double rotation;
+    private volatile String latestReply = "";
+    private CountDownLatch messageLatch = new CountDownLatch(1);
+    private final int TIMEOUT;
 
+    /** Simple class representing a color object. */
     public static class Color {
         public double red;
         public double green;
@@ -31,6 +36,7 @@ public class CameraWebsocketClient {
         public double blur;
     }
 
+    /** Simple class that contains information that Astrolabe returns. */
     public static class Info {
         public String cameraName;
         public String identifier;
@@ -48,6 +54,7 @@ public class CameraWebsocketClient {
         public String fullString;
     }
 
+    /** Simple class that represents an Apriltag. */
     public static class Apriltag {
         public String tagId;
         public double[] position;
@@ -58,106 +65,90 @@ public class CameraWebsocketClient {
         public String fullString;
     }
 
-    @OnMessage
-    public void onMessage(String newMessage) {
-        // This is the part that is skechy - writing to a file isn't the best way to do this but it works for the example. 
-        try {
-            FileWriter myWriter = new FileWriter("file_" + ip.replace("/", "").replace(":", "") + ".txt");
-            myWriter.write(newMessage);
-            myWriter.close();
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
+    /** Represents a information about a piece on the feild. */
+    public static class Piece {
+        public double distance;
+        public double angle; // radians
+        public double[] center;
+        public double pieceAngle; // radians
     }
 
-    public CameraWebsocketClient() {}
+    public CameraWebsocketClient() {
+        TIMEOUT = 5000;
+    }
 
-    public CameraWebsocketClient(String ip) {
-        // Ip should be somehting like "ws://10.42.0.118:50000". Include the ws:// and the port number.
+    public CameraWebsocketClient(String ip, int timeout) {
+        TIMEOUT = timeout;
         this.ip = ip;
     }
 
-    @OnOpen
-    public void onOpen(Session session) {
-        System.out.println("Connected to WebSocket server");
-    }
+    /**
+     * Attempts a connection to the websocket server.
 
-    @OnClose
-    public void onClose(Session session, CloseReason closeReason) {
-        System.out.println("Disconnected from WebSocket server");
-        System.out.println("Reason: " + closeReason);
-    }
-
-    @OnError
-    public void onError(Session session, Throwable throwable) {
-        System.out.println("An error occurred:");
-        throwable.printStackTrace();
-    }
-
-    public boolean isConnected() {
-        if (wSession == null) {
-            return false;
-        }
-        return wSession.isOpen();
-    }
-
+     * @return isConnected - whether or not there was a successful connection
+     */
     public boolean setupConnection() {
         // This function sets up the connection to the websocket server. It returns true if the connection was successful and false if it was not.
         // Call this at any time if you want to reconnect to the server.
         try {
-            WebSocketContainer container = ContainerProvider.getWebSocketContainer();
-            URI uri = new URI(this.ip);
-            wSession = container.connectToServer(CameraWebsocketClient.class, uri);
-            Thread.sleep(1000);
-            if (isConnected()) {
-                return true;
-            } else {
-                return false;
-            }
+            HttpClient client = HttpClient.newHttpClient();
+            webSocket = client.newWebSocketBuilder()
+                    .buildAsync(URI.create(ip), new WebSocketListener(this))
+                    .join();
         } catch (Exception e) {
-            e.printStackTrace();
+            // e.printStackTrace();
+            System.out.println("Failed to connect to " + ip);
             return false;
         }
-        
+        return isConnected();
     }
 
-    private void sendMessage(Session session, String pMessage) {
-        session.getAsyncRemote().sendText(pMessage);
+    /**
+     * Returns the status of the websocked connection.
+
+     * @return boolean - whether or not the websocket is connected
+     */
+    public boolean isConnected() {
+        return webSocket != null
+            && webSocket.isOutputClosed() == false
+            && webSocket.isInputClosed() == false;
+    }
+
+    public void sendMessage(String message) {
+        webSocket.sendText(message, true);
+    }
+
+    /**
+     * The callback for when a new message is received.
+
+     * @param newMessage - the message from the server
+     */
+    public void onMessage(String newMessage) {
+        System.out.println("Received message: " + newMessage);
+        this.latestReply = newMessage;
+        messageLatch.countDown();
     }
 
     public String getMessage() {
-        // This function gets the message from the websocket server. It returns the message as a string.
-        // This is the other sketchy part - it reads from a file. This is not the best way to do this but it works for the example.
+        return latestReply;
+    }
 
-        double startTime = System.currentTimeMillis();
-        String data = "";
+    /**
+     * Tries to get the next response from the websocket server.
 
-        while (startTime + 5000 > System.currentTimeMillis()) {
-            try {
-                boolean breakLoop = false;
-                File myObj = new File("file_" + ip.replace("/", "").replace(":", "") + ".txt");
-                Scanner myReader = new Scanner(myObj);
-                while (myReader.hasNextLine()) {
-                    data = myReader.nextLine();
-                    breakLoop = true;
-                }
-                if (breakLoop) {
-                    break;
-                }
-                myReader.close();
-            } catch (FileNotFoundException e) {
-                e.printStackTrace();
-            }
-        }
+     * @return latestReply - the response from the server
+     */
+    public String getLatestReply() {
         try {
-            FileWriter myWriter = new FileWriter("file_" + ip.replace("/", "").replace(":", "") + ".txt");
-            myWriter.write("");
-            myWriter.close();
-        } catch (IOException e) {
+            messageLatch.await(TIMEOUT, TimeUnit.MILLISECONDS); // Wait for up to 5 seconds
+        } catch (InterruptedException e) {
             e.printStackTrace();
         }
-        return data;
-        
+        return latestReply;
+    }
+
+    public void clear() {
+        latestReply = "";
     }
 
     public JsonObject decodeJson(String jsonString) {
@@ -173,17 +164,31 @@ public class CameraWebsocketClient {
         this.rotation = rotation;
     }
 
+    /**
+     * Requests info from the websocket server and returns it's reply.
+
+     * @return Info - the info that the server returned
+     */
     public Info getInfo() {
         try {
-            sendMessage(wSession, "info");
-            String newMessage = getMessage();
+            sendMessage("info");
+            String newMessage = getLatestReply();
             return getInfoFromString(newMessage);
         } catch (Exception e) {
             return new Info();
         }
     }
 
+    /**
+     * Parses a string as a Json object and returns it as an Info object.
+
+     * @param pMessage - the stringified json to parse
+     * @return info - the Info object that was represented in the json string
+     */
     private Info getInfoFromString(String pMessage) {
+        if (pMessage == null){
+            return null;
+        }
         try {
             JsonObject json = decodeJson(pMessage);
             Info info = new Info();
@@ -211,6 +216,7 @@ public class CameraWebsocketClient {
                 info.colorList.add(color);
             }
             info.fullString = pMessage;
+            info.fullString = pMessage;
             return info;
         } catch (Exception e) {
             System.out.println("Error getting info");
@@ -219,44 +225,144 @@ public class CameraWebsocketClient {
         }
     }
 
-    public List<Apriltag> getApriltags() {
+    /**
+     * Saves the array of colors passed in to be saved on the server
+
+     * @param colors - the array of colors that will be sent over to the server
+     * @return success - whether or not the command was successful or not
+     */
+    public boolean saveColors(Color[] colors) {
+        String outgoingString = "sp -values";
+
+        JsonArray colorArray = new JsonArray();
+        for (Color color : colors) {
+            JsonObject colorObject = new JsonObject();
+            colorObject.add("red", new JsonPrimitive(color.red));
+            colorObject.add("green", new JsonPrimitive(color.green));
+            colorObject.add("blue", new JsonPrimitive(color.blue));
+            colorObject.add("difference", new JsonPrimitive(color.difference));
+            colorObject.add("blur", new JsonPrimitive(color.blur));
+            
+            colorArray.add(colorObject);
+        }
+
+        // TODO: do some error check for this
+        sendMessage(outgoingString + colorArray.toString());
+
+        // TODO: after error checks, return true or false based on the success of the command
+        return true;
+    }
+
+    /**
+     * Switches the color that the server will look for when doing piece detection.
+
+     * @param index - the index in the color array 
+     * @return boolean - whether the color was switched
+     */
+    public boolean switchColors(int index) {
+        sendMessage("sc -new_color=" + index);
+
+        // TODO: error checks and retun success
+        return true;
+    }
+
+    /**
+     * Requests information from the coprocessor and returns it as a Piece object.
+
+     * @return piece - information about the peice, if available 
+     */
+    public Piece getPiece() {
         try {
-            sendMessage(wSession, "fa");
-            String newMessage = getMessage();
-            return getApriltagsFromString(newMessage);
+            sendMessage("fp");
+            String newMessage = getLatestReply();
+            return getPieceFromString(newMessage);
         } catch (Exception e) {
             e.printStackTrace();
-            if (setupConnection()){
-                sendMessage(wSession, "fa");
-                String newMessage = getMessage();
-                return getApriltagsFromString(newMessage);
+            if (setupConnection()) {
+                sendMessage("fp");
+                String newMessage = getLatestReply();
+                return getPieceFromString(newMessage);
             }
-            return new ArrayList<Apriltag>();
+            return null;
         }
     }
 
 
-    private List<Apriltag> getApriltagsFromString(String pMessage) {
+    /**
+     * Makes a request to the websocket server for apriltag information and returns its response.
+
+     * @return aprilTags - a list of Apriltags that we got from the server
+     */
+    public List<Apriltag> getApriltags() {
         try {
-            // Decode the JSON string into a JsonArray
+            sendMessage("fa");
+            String newMessage = getLatestReply();
+            return getApriltagsFromString(newMessage);
+        } catch (Exception e) {
+            e.printStackTrace();
+            if (setupConnection()) {
+                sendMessage("fa");
+                String newMessage = getLatestReply();
+                return getApriltagsFromString(newMessage);
+            }
+            return new ArrayList<>();
+        }
+    }
+
+    private double parseJsonElementAsDouble(JsonElement element) {
+        // TODO: Implement this with other functions
+        if (element != null && element.isJsonPrimitive() && element.getAsJsonPrimitive().isNumber()) {
+            return element.getAsDouble();
+        } else {
+            return Double.NaN;
+        }
+    }
+
+    private Piece getPieceFromString(String pMessage) {
+        if (pMessage == null || pMessage.contains("error")) return null;
+
+        try {
+            JsonObject json = new Gson().fromJson(pMessage, JsonObject.class);
+            Piece piece = new Piece();
+
+            if (json != null && json.size() > 0) {
+                piece.distance = parseJsonElementAsDouble(json.get("distance"));
+                piece.angle = parseJsonElementAsDouble(json.get("angle"));
+                piece.center = new double[] {
+                    parseJsonElementAsDouble(json.get("center").getAsJsonArray().get(0)),
+                    parseJsonElementAsDouble(json.get("center").getAsJsonArray().get(1))
+                };
+                piece.pieceAngle = parseJsonElementAsDouble(json.get("piece_angle"));
+                return piece;
+            } else return null;
+        } catch (Exception e) {
+            e.printStackTrace();
+            return new Piece();
+        }
+    }
+
+    private List<Apriltag> getApriltagsFromString(String pMessage) {
+        if (pMessage == null) {
+            return null;
+        }
+        try {
             JsonArray jsonArray = new Gson().fromJson(pMessage, JsonArray.class);
             List<Apriltag> apriltags = new ArrayList<>();
-    
-            // Check if the JsonArray is not null and has elements
+
             if (jsonArray != null && jsonArray.size() > 0) {
                 for (var apriltagJson : jsonArray) {
                     Apriltag apriltag = new Apriltag();
                     JsonObject apriltagObject = apriltagJson.getAsJsonObject();
                     apriltag.tagId = apriltagObject.get("tag_id").getAsString();
                     apriltag.position = new double[]{
-                        apriltagObject.get("position").getAsJsonArray().get(0).getAsDouble(),
-                        apriltagObject.get("position").getAsJsonArray().get(1).getAsDouble(),
-                        apriltagObject.get("position").getAsJsonArray().get(2).getAsDouble()
+                            apriltagObject.get("position").getAsJsonArray().get(0).getAsDouble(),
+                            apriltagObject.get("position").getAsJsonArray().get(1).getAsDouble(),
+                            apriltagObject.get("position").getAsJsonArray().get(2).getAsDouble()
                     };
                     apriltag.orientation = new double[]{
-                        apriltagObject.get("orientation").getAsJsonArray().get(0).getAsDouble(),
-                        apriltagObject.get("orientation").getAsJsonArray().get(1).getAsDouble(),
-                        apriltagObject.get("orientation").getAsJsonArray().get(2).getAsDouble()
+                            apriltagObject.get("orientation").getAsJsonArray().get(0).getAsDouble(),
+                            apriltagObject.get("orientation").getAsJsonArray().get(1).getAsDouble(),
+                            apriltagObject.get("orientation").getAsJsonArray().get(2).getAsDouble()
                     };
                     apriltag.distance = apriltagObject.get("distance").getAsDouble();
                     apriltag.horizontalAngle = apriltagObject.get("horizontal_angle").getAsDouble();
@@ -265,11 +371,47 @@ public class CameraWebsocketClient {
                 }
                 apriltags.get(0).fullString = pMessage;
             }
-    
+
             return apriltags;
         } catch (Exception e) {
             e.printStackTrace();
             return new ArrayList<>();
+        }
+    }
+    public void disconnect() {
+        if (webSocket != null) {
+            webSocket.sendClose(WebSocket.NORMAL_CLOSURE, "Disconnecting")
+                    .thenRun(() -> System.out.println("WebSocket closed"));
+        }
+    }
+    private static class WebSocketListener implements Listener {
+        private final CameraWebsocketClient client;
+
+        public WebSocketListener(CameraWebsocketClient client) {
+            this.client = client;
+        }
+
+        @Override
+        public void onOpen(WebSocket webSocket) {
+            System.out.println("WebSocket opened");
+            Listener.super.onOpen(webSocket);
+        }
+
+        @Override
+        public CompletionStage<?> onText(WebSocket webSocket, CharSequence data, boolean last) {
+            client.onMessage(data.toString());
+            return Listener.super.onText(webSocket, data, last);
+        }
+
+        @Override
+        public void onError(WebSocket webSocket, Throwable error) {
+            error.printStackTrace();
+        }
+
+        @Override
+        public CompletionStage<?> onClose(WebSocket webSocket, int statusCode, String reason) {
+            System.out.println("WebSocket closed with status " + statusCode + " and reason " + reason);
+            return Listener.super.onClose(webSocket, statusCode, reason);
         }
     }
 
