@@ -26,7 +26,8 @@ public class Estimator {
     }
 
     public void periodic() {
-        ChassisSpeeds output = visionSystem.getPieceDrive(2, 0.5, -10, 0 );
+        String[] balls = {"2"};
+        ChassisSpeeds output = visionSystem.getTagDrive(1, balls, Math.PI/6, 0.0, 5.0);
         output.print();
     }
         

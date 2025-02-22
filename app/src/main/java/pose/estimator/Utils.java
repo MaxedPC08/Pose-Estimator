@@ -37,17 +37,17 @@ class Utils{
     }
 
     static class ChassisSpeeds{
-        double vx;
-        double vy;
-        double omega;
+        double vxMetersPerSecond;
+        double vyMetersPerSecond;
+        double omegaRadiansPerSecond;
 
-        public ChassisSpeeds(double vx, double vy, double omega) {
-            this.vx = vx;
-            this.vy = vy;
-            this.omega = omega;
+        public ChassisSpeeds(double vxMetersPerSecond, double vyMetersPerSecond, double omegaRadiansPerSecond) {
+            this.vxMetersPerSecond = vxMetersPerSecond;
+            this.vyMetersPerSecond = vyMetersPerSecond;
+            this.omegaRadiansPerSecond = omegaRadiansPerSecond;
         }
         public void print(){
-            System.out.println("vx: " + vx + ", vy: " + vy + ", omega: " + omega);
+            System.out.println("vx: " + vxMetersPerSecond + ", vy: " + vyMetersPerSecond + ", omega: " + omegaRadiansPerSecond);
         }
     }
 }
